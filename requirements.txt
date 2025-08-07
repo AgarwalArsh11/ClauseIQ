@@ -1,6 +1,4 @@
-flask
-pdfplumber
-faiss-cpu
-sentence-transformers
+gradio
 transformers
+pdfplumber
 torch

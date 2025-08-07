@@ -1,61 +1,45 @@
-# main.py
-from flask import Flask, request, jsonify
+import gradio as gr
 import pdfplumber
-import faiss
-import numpy as np
-from sentence_transformers import SentenceTransformer
 from transformers import pipeline
-import os
 
-app = Flask(__name__)
-
-model = SentenceTransformer('all-MiniLM-L6-v2')
+# Load a Question Answering model (use your own if different)
 qa_pipeline = pipeline("question-answering", model="distilbert-base-cased-distilled-squad")
 
-def extract_text_from_pdf(path):
-    text = ""
-    with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
-            text += page.extract_text() + "\n"
+# Function to extract text from uploaded PDF
+def extract_text_from_pdf(pdf_file):
+    with pdfplumber.open(pdf_file) as pdf:
+        text = "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
     return text
 
-def split_text(text, max_length=300, overlap=50):
-    words = text.split()
-    chunks = []
-    i = 0
-    while i < len(words):
-        chunk = words[i:i + max_length]
-        chunks.append(" ".join(chunk))
-        i += max_length - overlap
-    return chunks
+# Main function for answering
+def answer_question(question, pdf_file=None, context_text=None):
+    if pdf_file is not None:
+        context = extract_text_from_pdf(pdf_file)
+    elif context_text:
+        context = context_text
+    else:
+        return "Please provide either a PDF file or paste text context."
 
-@app.route("/api/v1/hackrx/run", methods=["POST"])
-def run_qa():
-    # Receive uploaded file and question
-    if 'file' not in request.files or 'question' not in request.form:
-        return jsonify({"error": "Missing file or question"}), 400
+    if not context.strip():
+        return "Could not extract context from PDF."
 
-    file = request.files['file']
-    question = request.form['question']
+    result = qa_pipeline(question=question, context=context)
+    return result["answer"]
 
-    file_path = "temp.pdf"
-    file.save(file_path)
+# Gradio UI
+with gr.Blocks() as demo:
+    gr.Markdown("# 📄 ClauseIQ - Legal Document Q&A System")
+    gr.Markdown("Ask questions about legal, HR, insurance, or compliance documents. Upload a PDF or paste text.")
 
-    try:
-        raw_text = extract_text_from_pdf(file_path)
-        chunks = split_text(raw_text)
-        embeddings = model.encode(chunks)
-        index = faiss.IndexFlatL2(embeddings.shape[1])
-        index.add(np.array(embeddings))
+    with gr.Row():
+        question_input = gr.Textbox(label="Ask your question")
+    with gr.Row():
+        pdf_input = gr.File(label="Upload PDF (optional)", type="file")
+        context_input = gr.Textbox(label="Or paste context text", lines=10, placeholder="Paste document content here...")
 
-        query_embedding = model.encode([question])
-        D, I = index.search(np.array(query_embedding), k=5)
-        context = " ".join([chunks[i] for i in I[0]])
-        result = qa_pipeline(question=question, context=context)
+    output = gr.Textbox(label="Answer")
 
-        return jsonify({"answer": result["answer"]})
-    finally:
-        os.remove(file_path)
+    submit_btn = gr.Button("Submit")
+    submit_btn.click(fn=answer_question, inputs=[question_input, pdf_input, context_input], outputs=output)
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+demo.launch()
