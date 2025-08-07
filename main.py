@@ -1,37 +1,20 @@
 # main.py
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
-from typing import List
+from flask import Flask, request, jsonify
 import pdfplumber
-import requests
-import tempfile
+import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from transformers import pipeline
-import faiss
+import os
 
-app = FastAPI()
+app = Flask(__name__)
 
-# Load models
-embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+model = SentenceTransformer('all-MiniLM-L6-v2')
 qa_pipeline = pipeline("question-answering", model="distilbert-base-cased-distilled-squad")
 
-# Define request and response structure
-class QueryRequest(BaseModel):
-    documents: str  # URL to PDF
-    questions: List[str]
-
-class QueryResponse(BaseModel):
-    answers: List[str]
-
-def extract_text_from_pdf_url(pdf_url):
-    response = requests.get(pdf_url)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-        tmp_file.write(response.content)
-        tmp_file_path = tmp_file.name
-
+def extract_text_from_pdf(path):
     text = ""
-    with pdfplumber.open(tmp_file_path) as pdf:
+    with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
             text += page.extract_text() + "\n"
     return text
@@ -46,27 +29,33 @@ def split_text(text, max_length=300, overlap=50):
         i += max_length - overlap
     return chunks
 
-@app.post("/api/v1/hackrx/run", response_model=QueryResponse)
-def run_query(request: QueryRequest):
-    # 1. Extract text from document
-    raw_text = extract_text_from_pdf_url(request.documents)
-    
-    # 2. Chunk and embed
-    chunks = split_text(raw_text)
-    embeddings = embed_model.encode(chunks)
-    
-    # 3. Build FAISS index
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(np.array(embeddings))
-    
-    # 4. For each question, find answer
-    answers = []
-    for query in request.questions:
-        query_embedding = embed_model.encode([query])
+@app.route("/api/v1/hackrx/run", methods=["POST"])
+def run_qa():
+    # Receive uploaded file and question
+    if 'file' not in request.files or 'question' not in request.form:
+        return jsonify({"error": "Missing file or question"}), 400
+
+    file = request.files['file']
+    question = request.form['question']
+
+    file_path = "temp.pdf"
+    file.save(file_path)
+
+    try:
+        raw_text = extract_text_from_pdf(file_path)
+        chunks = split_text(raw_text)
+        embeddings = model.encode(chunks)
+        index = faiss.IndexFlatL2(embeddings.shape[1])
+        index.add(np.array(embeddings))
+
+        query_embedding = model.encode([question])
         D, I = index.search(np.array(query_embedding), k=5)
         context = " ".join([chunks[i] for i in I[0]])
-        result = qa_pipeline(question=query, context=context)
-        answers.append(result["answer"])
-    
-    return QueryResponse(answers=answers)
+        result = qa_pipeline(question=question, context=context)
+
+        return jsonify({"answer": result["answer"]})
+    finally:
+        os.remove(file_path)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)

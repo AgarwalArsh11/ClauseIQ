@@ -1,7 +1,6 @@
-fastapi
-uvicorn
+flask
 pdfplumber
-requests
-sentence-transformers
 faiss-cpu
+sentence-transformers
 transformers
+torch
